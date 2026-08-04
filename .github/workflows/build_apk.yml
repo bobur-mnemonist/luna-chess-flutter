@@ -29,6 +29,14 @@ jobs:
           rm -rf /tmp/scaffold/lib
           cp -r lib /tmp/scaffold/lib
           if [ -d assets ]; then cp -r assets /tmp/scaffold/assets; fi
+          # Work around an AGP/aapt2 vs Android SDK 35 incompatibility:
+          # the scaffold's bundled aapt2 can't parse SDK 35's android.jar
+          # resource table ("RES_TABLE_TYPE_TYPE entry offsets overlap"),
+          # which only surfaces in --release builds (lint/resource
+          # verification runs there but not in --debug). Forcing a newer
+          # aapt2 via Maven fixes it without bumping the whole AGP/Gradle
+          # toolchain.
+          echo "android.aapt2Version=8.6.1-11315950" >> /tmp/scaffold/android/gradle.properties
 
       - name: Install dependencies
         working-directory: /tmp/scaffold
