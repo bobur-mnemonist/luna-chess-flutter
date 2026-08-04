@@ -29,6 +29,9 @@ jobs:
           rm -rf /tmp/scaffold/lib
           cp -r lib /tmp/scaffold/lib
           if [ -d assets ]; then cp -r assets /tmp/scaffold/assets; fi
+          # flutter_tts requires minSdk 24; the fresh scaffold defaults to
+          # flutter.minSdkVersion (21), so bump it here.
+          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/' /tmp/scaffold/android/app/build.gradle
 
       - name: Install dependencies
         working-directory: /tmp/scaffold
