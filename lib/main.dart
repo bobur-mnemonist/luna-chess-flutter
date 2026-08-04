@@ -255,6 +255,20 @@ class _ChessBoardScreenState extends State<ChessBoardScreen> {
   @override
   void initState() {
     super.initState();
+    // Ensure audio plays through the media/notification stream (not the
+    // call/ringtone stream) and works even if the device's ringer is
+    // silent — some Android devices otherwise mute AssetSource playback
+    // unexpectedly.
+    _audioPlayer.setPlayerMode(PlayerMode.lowLatency);
+    _audioPlayer.setAudioContext(
+      AudioContext(
+        android: AudioContextAndroid(
+          contentType: AndroidContentType.sonification,
+          usageType: AndroidUsageType.assistanceSonification,
+          audioFocus: AndroidAudioFocus.none,
+        ),
+      ),
+    );
     if (widget.resumeFen != null) {
       game = chess_lib.Chess.fromFEN(widget.resumeFen!);
       fenHistory = List.of(widget.resumeHistory ?? [game.fen]);
