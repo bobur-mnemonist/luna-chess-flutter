@@ -13,6 +13,8 @@ dependencies:
   flutter_tts: ^3.8.5
   chess: ^0.8.1
   stockfish_flutter_plus: ^1.0.1
+  shared_preferences: ^2.2.2
+  audioplayers: ^6.0.0
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -22,3 +24,4 @@ flutter:
   uses-material-design: true
   assets:
     - assets/images/
+    - assets/audio/
