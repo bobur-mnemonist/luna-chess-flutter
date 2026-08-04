@@ -138,6 +138,10 @@ class _ChessBoardScreenState extends State<ChessBoardScreen> {
   int? selectedSquareIndex; // 0-63, null if nothing selected
   List<int> legalMoveTargets = [];
   String statusText = "White's move";
+  bool soundOn = true;
+  bool voiceOn = true;
+  int? hintFromIndex;
+  int? hintToIndex;
 
   @override
   void initState() {
@@ -160,6 +164,8 @@ class _ChessBoardScreenState extends State<ChessBoardScreen> {
     final tappedSquareName = squareName(row, col);
 
     setState(() {
+      hintFromIndex = null;
+      hintToIndex = null;
       if (selectedSquareIndex == null) {
         // Nothing selected yet — try to select a piece belonging to the side to move.
         final piece = game.get(tappedSquareName);
@@ -250,6 +256,35 @@ class _ChessBoardScreenState extends State<ChessBoardScreen> {
     Navigator.of(context).pop();
   }
 
+  void _toggleSound() {
+    setState(() => soundOn = !soundOn);
+  }
+
+  void _toggleVoice() {
+    setState(() => voiceOn = !voiceOn);
+  }
+
+  // Shows a simple hint: highlights the from/to squares of the first legal
+  // move available. Not engine-backed yet — that comes with the AI later.
+  void _showHint() {
+    final moves = game.moves({'verbose': true});
+    if (moves.isEmpty) return;
+    final move = moves.first;
+    final fromName = move['from'] as String;
+    final toName = move['to'] as String;
+
+    int indexFromName(String name) {
+      final col = name.codeUnitAt(0) - 'a'.codeUnitAt(0);
+      final row = 8 - int.parse(name[1]);
+      return squareIndex(row, col);
+    }
+
+    setState(() {
+      hintFromIndex = indexFromName(fromName);
+      hintToIndex = indexFromName(toName);
+    });
+  }
+
   String _difficultyLabel(Difficulty d) {
     switch (d) {
       case Difficulty.easy:
@@ -292,12 +327,10 @@ class _ChessBoardScreenState extends State<ChessBoardScreen> {
     }
   }
 
-  Color? _pieceColor(int row, int col) {
+  Color _pieceColor(int row, int col) {
     final piece = game.get(squareName(row, col));
-    if (piece == null) return null;
-    return piece.color == chess_lib.Color.WHITE
-        ? Colors.white
-        : const Color(0xFF10141C);
+    final isWhite = piece?.color == chess_lib.Color.WHITE;
+    return isWhite ? const Color(0xFFF5F5F5) : const Color(0xFF1B1F27);
   }
 
   @override
@@ -342,33 +375,51 @@ class _ChessBoardScreenState extends State<ChessBoardScreen> {
                     final isLight = (row + col) % 2 == 0;
                     final isSelected = selectedSquareIndex == index;
                     final isLegalTarget = legalMoveTargets.contains(index);
+                    final isHintSquare =
+                        index == hintFromIndex || index == hintToIndex;
                     final glyph = _pieceGlyph(row, col);
                     final glyphColor = _pieceColor(row, col);
+                    final strokeColor = glyphColor == const Color(0xFFF5F5F5)
+                        ? const Color(0xFF1B1F27)
+                        : const Color(0xFFF5F5F5);
 
                     return GestureDetector(
                       onTap: () => onSquareTapped(row, col),
                       child: Container(
                         color: isSelected
                             ? kSelectedSquare
-                            : (isLight ? kLightSquare : kDarkSquare),
+                            : isHintSquare
+                                ? const Color(0xFF7FBF7F)
+                                : (isLight ? kLightSquare : kDarkSquare),
                         child: Stack(
                           alignment: Alignment.center,
                           children: [
                             if (glyph != null)
-                              Text(
-                                glyph,
-                                style: TextStyle(
-                                  fontSize: 32,
-                                  color: glyphColor,
-                                  shadows: [
-                                    Shadow(
-                                      color: glyphColor == Colors.white
-                                          ? Colors.black.withOpacity(0.5)
-                                          : Colors.white.withOpacity(0.3),
-                                      blurRadius: 1,
+                              Stack(
+                                alignment: Alignment.center,
+                                children: [
+                                  // Outline pass: draws a thin stroke in the
+                                  // opposite color so the piece stays legible
+                                  // on both light and dark squares.
+                                  Text(
+                                    glyph,
+                                    style: TextStyle(
+                                      fontSize: 32,
+                                      foreground: Paint()
+                                        ..style = PaintingStyle.stroke
+                                        ..strokeWidth = 2.2
+                                        ..color = strokeColor,
                                     ),
-                                  ],
-                                ),
+                                  ),
+                                  // Fill pass: the actual piece color on top.
+                                  Text(
+                                    glyph,
+                                    style: TextStyle(
+                                      fontSize: 32,
+                                      color: glyphColor,
+                                    ),
+                                  ),
+                                ],
                               ),
                             if (isLegalTarget)
                               Container(
@@ -398,6 +449,23 @@ class _ChessBoardScreenState extends State<ChessBoardScreen> {
                 _ActionButton(label: 'Restart', onPressed: _restart),
               ],
             ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _ActionButton(label: 'Hint', onPressed: _showHint),
+                const SizedBox(width: 16),
+                _ActionButton(
+                  label: soundOn ? 'SFX: On' : 'SFX: Off',
+                  onPressed: _toggleSound,
+                ),
+                const SizedBox(width: 16),
+                _ActionButton(
+                  label: voiceOn ? 'Voice: On' : 'Voice: Off',
+                  onPressed: _toggleVoice,
+                ),
+              ],
+            ),
             const SizedBox(height: 24),
           ],
         ),
@@ -418,10 +486,10 @@ class _ActionButton extends StatelessWidget {
       style: ElevatedButton.styleFrom(
         backgroundColor: kPanelColor,
         foregroundColor: Colors.white,
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       ),
       onPressed: onPressed,
-      child: Text(label),
+      child: Text(label, style: const TextStyle(fontSize: 13)),
     );
   }
 }
