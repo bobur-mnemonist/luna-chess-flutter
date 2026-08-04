@@ -1,4 +1,4 @@
-sname: luna_chess
+name: luna_chess
 description: A chess app with an AI companion named Luna.
 publish_to: 'none'
 version: 1.0.0+1
