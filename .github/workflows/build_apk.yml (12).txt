@@ -1,0 +1,45 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: 'stable'
+
+      - name: Scaffold the platform-specific project files
+        run: |
+          # Our repo only contains pubspec.yaml + lib/ (the Dart source).
+          # `flutter create` generates the android/, ios/, etc. folders
+          # that Gradle needs to actually build an APK. We generate a
+          # fresh scaffold in a temp directory, then drop our own
+          # pubspec.yaml and lib/ into it before building.
+          flutter create --org org.bobur --project-name luna_chess /tmp/scaffold
+          cp -f pubspec.yaml /tmp/scaffold/pubspec.yaml
+          rm -rf /tmp/scaffold/lib
+          cp -r lib /tmp/scaffold/lib
+          if [ -d assets ]; then cp -r assets /tmp/scaffold/assets; fi
+
+      - name: Install dependencies
+        working-directory: /tmp/scaffold
+        run: flutter pub get
+
+      - name: Build APK
+        working-directory: /tmp/scaffold
+        run: flutter build apk --debug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: luna-chess-flutter-apk
+          path: /tmp/scaffold/build/app/outputs/flutter-apk/app-debug.apk
