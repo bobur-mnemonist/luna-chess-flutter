@@ -30,10 +30,27 @@ jobs:
           cp -r lib /tmp/scaffold/lib
           if [ -d assets ]; then cp -r assets /tmp/scaffold/assets; fi
           # flutter_tts requires minSdk 24; the fresh scaffold defaults to
-          # flutter.minSdkVersion (21), so bump it here. Flutter 3.24
-          # scaffolds use Kotlin DSL (build.gradle.kts), not Groovy.
-          sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/' /tmp/scaffold/android/app/build.gradle.kts
-          grep -n "minSdk" /tmp/scaffold/android/app/build.gradle.kts
+          # flutter.minSdkVersion (21), so bump it here. Handle both the
+          # Groovy (build.gradle) and Kotlin DSL (build.gradle.kts) cases,
+          # whichever this Flutter version actually generated.
+          GRADLE_FILE=""
+          if [ -f /tmp/scaffold/android/app/build.gradle.kts ]; then
+            GRADLE_FILE=/tmp/scaffold/android/app/build.gradle.kts
+          elif [ -f /tmp/scaffold/android/app/build.gradle ]; then
+            GRADLE_FILE=/tmp/scaffold/android/app/build.gradle
+          fi
+          echo "Using gradle file: $GRADLE_FILE"
+          if [ -n "$GRADLE_FILE" ]; then
+            sed -i \
+              -e 's/minSdk = flutter.minSdkVersion/minSdk = 24/' \
+              -e 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/' \
+              -e 's/minSdkVersion = flutter.minSdkVersion/minSdkVersion = 24/' \
+              "$GRADLE_FILE"
+            grep -n "minSdk" "$GRADLE_FILE"
+          else
+            echo "::error::No build.gradle or build.gradle.kts found under /tmp/scaffold/android/app"
+            exit 1
+          fi
 
       - name: Install dependencies
         working-directory: /tmp/scaffold
