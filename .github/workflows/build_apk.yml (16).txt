@@ -1,0 +1,77 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: 'stable'
+
+      - name: Scaffold the platform-specific project files
+        run: |
+          # Our repo only contains pubspec.yaml + lib/ (the Dart source).
+          # `flutter create` generates the android/, ios/, etc. folders
+          # that Gradle needs to actually build an APK. We generate a
+          # fresh scaffold in a temp directory, then drop our own
+          # pubspec.yaml and lib/ into it before building.
+          flutter create --org org.bobur --project-name luna_chess /tmp/scaffold
+          cp -f pubspec.yaml /tmp/scaffold/pubspec.yaml
+          rm -rf /tmp/scaffold/lib
+          cp -r lib /tmp/scaffold/lib
+          if [ -d assets ]; then cp -r assets /tmp/scaffold/assets; fi
+          # Work around an AGP/aapt2 vs Android SDK 35 incompatibility:
+          # the scaffold's bundled aapt2 can't parse SDK 35's android.jar
+          # resource table ("RES_TABLE_TYPE_TYPE entry offsets overlap"),
+          # which only surfaces in --release builds (lint/resource
+          # verification runs there but not in --debug). Forcing a newer
+          # aapt2 via Maven fixes it without bumping the whole AGP/Gradle
+          # toolchain.
+          echo "android.aapt2Version=8.6.1-11315950" >> /tmp/scaffold/android/gradle.properties
+          # Bump the Kotlin Gradle plugin version: newer plugins
+          # (shared_preferences_android, stockfish_flutter_plus) are
+          # compiled with Kotlin 1.9+, but the scaffold defaults to 1.7.1,
+          # causing "compiled with an incompatible version of Kotlin"
+          # errors. Handle both possible locations (Flutter 3.19+ uses
+          # settings.gradle's plugins block; older scaffolds use
+          # build.gradle's ext.kotlin_version).
+          if [ -f /tmp/scaffold/android/settings.gradle ]; then
+            sed -i -E "s/(id \"org\.jetbrains\.kotlin\.android\" version )\"[0-9.]+\"/\1\"1.9.22\"/" /tmp/scaffold/android/settings.gradle
+            grep -n "kotlin.android" /tmp/scaffold/android/settings.gradle
+          fi
+          if [ -f /tmp/scaffold/android/build.gradle ]; then
+            sed -i -E "s/ext\.kotlin_version = ['\"][0-9.]+['\"]/ext.kotlin_version = '1.9.22'/" /tmp/scaffold/android/build.gradle
+            grep -n "kotlin_version" /tmp/scaffold/android/build.gradle || true
+          fi
+
+      - name: Install dependencies
+        working-directory: /tmp/scaffold
+        run: flutter pub get
+
+      - name: Build APK
+        working-directory: /tmp/scaffold
+        # Release build: strips debug symbols and dramatically reduces size
+        # compared to --debug. --split-per-abi + --target-platform limits
+        # output to arm64-v8a only (the architecture virtually all Android
+        # phones from the last ~6 years use), instead of also building
+        # armeabi-v7a (older 32-bit devices) and x86_64 (emulators/rare
+        # x86 tablets) — cutting total output size roughly 3x since each
+        # architecture bundles its own copy of Stockfish's native library,
+        # which is the bulk of the app's size and isn't reduced by Dart
+        # code shrinking.
+        run: flutter build apk --release --target-platform android-arm64 --split-per-abi
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: luna-chess-flutter-apk
+          path: /tmp/scaffold/build/app/outputs/flutter-apk/*.apk
