@@ -177,7 +177,8 @@ class _MenuScreenState extends State<MenuScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: SafeArea(
-        child: Center(
+        child: SingleChildScrollView(
+          child: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -208,6 +209,7 @@ class _MenuScreenState extends State<MenuScreen> {
               ],
               _ActionButton(label: 'Start New Game', onPressed: _startGame),
             ],
+          ),
           ),
         ),
       ),
@@ -366,62 +368,69 @@ class _LunaPanelState extends State<LunaPanel> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      mainAxisSize: MainAxisSize.min,
       children: [
-        AnimatedBuilder(
-          animation: Listenable.merge([_breathController, _blinkController]),
-          builder: (context, child) {
-            final blinkSquash = 1.0 - (_blinkController.value * 0.85);
-            return AnimatedRotation(
-              turns: _moodTilt() / (2 * 3.14159),
-              duration: const Duration(milliseconds: 500),
-              curve: Curves.easeInOut,
-              child: Transform.scale(
-                scale: _breathScale.value,
-                child: Transform(
-                  alignment: Alignment.center,
-                  transform: Matrix4.identity()..scale(1.0, blinkSquash),
-                  child: child,
+        SizedBox(
+          width: 90,
+          height: 90,
+          child: AnimatedBuilder(
+            animation: Listenable.merge([_breathController, _blinkController]),
+            builder: (context, child) {
+              final blinkSquash = 1.0 - (_blinkController.value * 0.85);
+              return AnimatedRotation(
+                turns: _moodTilt() / (2 * 3.14159),
+                duration: const Duration(milliseconds: 500),
+                curve: Curves.easeInOut,
+                child: Transform.scale(
+                  scale: _breathScale.value,
+                  child: Transform(
+                    alignment: Alignment.center,
+                    transform: Matrix4.identity()..scale(1.0, blinkSquash),
+                    child: child,
+                  ),
                 ),
+              );
+            },
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: Stack(
+                children: [
+                  Image.asset(
+                    'assets/images/luna_avatar.png',
+                    width: 90,
+                    height: 90,
+                    fit: BoxFit.cover,
+                  ),
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 500),
+                    width: 90,
+                    height: 90,
+                    color: _moodTint(),
+                  ),
+                ],
               ),
-            );
-          },
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(16),
-            child: Stack(
-              children: [
-                Image.asset(
-                  'assets/images/luna_avatar.png',
-                  width: 100,
-                  height: 100,
-                  fit: BoxFit.cover,
-                ),
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 500),
-                  width: 100,
-                  height: 100,
-                  color: _moodTint(),
-                ),
-              ],
             ),
           ),
         ),
         if (widget.line != null) ...[
-          const SizedBox(height: 8),
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 250),
-            child: Container(
-              key: ValueKey(widget.line),
-              constraints: const BoxConstraints(maxWidth: 260),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              decoration: BoxDecoration(
-                color: kPanelColor,
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: Text(
-                widget.line!,
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 13, color: Colors.white70),
+          const SizedBox(width: 12),
+          Flexible(
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 250),
+              child: Container(
+                key: ValueKey(widget.line),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: kPanelColor,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Text(
+                  widget.line!,
+                  textAlign: TextAlign.left,
+                  style: const TextStyle(fontSize: 13, color: Colors.white70),
+                ),
               ),
             ),
           ),
@@ -974,7 +983,8 @@ class _ChessBoardScreenState extends State<ChessBoardScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: SafeArea(
-        child: Column(
+        child: SingleChildScrollView(
+          child: Column(
           children: [
             const SizedBox(height: 24),
             const Text(
@@ -1122,6 +1132,7 @@ class _ChessBoardScreenState extends State<ChessBoardScreen> {
             ),
             const SizedBox(height: 24),
           ],
+          ),
         ),
       ),
     );
