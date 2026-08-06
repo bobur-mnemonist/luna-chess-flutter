@@ -736,6 +736,11 @@ class _ChessBoardScreenState extends State<ChessBoardScreen> {
   bool aiThinking = false;
   bool hintLoading = false;
   bool _awaitingHint = false;
+  // The board FEN a hint was requested for. If the position has since
+  // changed (a move was made) by the time the hint's bestmove arrives, the
+  // response is stale and must be discarded rather than applied — this is
+  // the safety net behind the hintLoading/_awaitingHint re-tap guard.
+  String? _hintRequestedForFen;
   List<String> fenHistory = [];
   String? lunaLine;
   // Which side the human plays — set from the menu's color picker.
@@ -990,7 +995,14 @@ class _ChessBoardScreenState extends State<ChessBoardScreen> {
         if (_awaitingHint) {
           _awaitingHint = false;
           _applyHintMove(uciMove);
-        } else {
+        } else if (aiThinking) {
+          // Only apply as a real move if we actually asked the engine to
+          // move (aiThinking is set exactly there, in
+          // _maybeTriggerEngineMove). Without this check, any stray or
+          // duplicate bestmove — e.g. a leftover response from an earlier
+          // request — was being applied as a move unconditionally, which
+          // is what caused a piece to move on its own and the board to
+          // get stuck afterward.
           _applyEngineMove(uciMove);
         }
       }
@@ -1264,39 +1276,47 @@ class _ChessBoardScreenState extends State<ChessBoardScreen> {
     });
   }
 
-  void _openAnalysis() {
+  void _openAnalysis() async {
     // The Stockfish FFI binding appears to only support one live engine
     // process at a time — leaving this screen's engine running while
     // Analysis creates its own second instance is what left Analysis stuck
     // on "Evaluating..." (its engine never reached the ready state). Tear
-    // this one down before navigating, and rebuild it on return.
+    // this one down before navigating, and rebuild it on return. The
+    // native process teardown isn't guaranteed to be synchronous, so a
+    // short delay here gives it time to actually release before Analysis
+    // tries to start a new one.
     _clockTimer?.cancel();
     stockfish?.dispose();
     stockfish = null;
-    Navigator.of(context)
-        .push(
-          MaterialPageRoute(
-            builder: (context) => AnalysisScreen(fenHistory: List.of(fenHistory)),
-          ),
-        )
-        .then((_) {
-      if (!mounted) return;
-      _initEngine();
-      if (!widget.timeControl.isUntimed && !timeExpired && !game.game_over) {
-        _startClock();
-      }
-    });
+    await Future.delayed(const Duration(milliseconds: 250));
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => AnalysisScreen(fenHistory: List.of(fenHistory)),
+      ),
+    );
+    if (!mounted) return;
+    _initEngine();
+    if (!widget.timeControl.isUntimed && !timeExpired && !game.game_over) {
+      _startClock();
+    }
   }
 
   void _backToMenu() {
+    final gameIsOver = game.game_over || timeExpired;
     showDialog(
       context: context,
       builder: (dialogContext) => AlertDialog(
         backgroundColor: kPanelColor,
-        title: const Text('Leave game?', style: TextStyle(color: Colors.white)),
-        content: const Text(
-          'You can save your progress and continue later, or discard this game.',
-          style: TextStyle(color: Colors.white70),
+        title: Text(
+          gameIsOver ? 'Back to menu?' : 'Leave game?',
+          style: const TextStyle(color: Colors.white),
+        ),
+        content: Text(
+          gameIsOver
+              ? 'This game has ended.'
+              : 'You can save your progress and continue later, or discard this game.',
+          style: const TextStyle(color: Colors.white70),
         ),
         actions: [
           TextButton(
@@ -1309,24 +1329,25 @@ class _ChessBoardScreenState extends State<ChessBoardScreen> {
               if (dialogContext.mounted) Navigator.of(dialogContext).pop();
               if (mounted) Navigator.of(context).pop();
             },
-            child: const Text('Discard & Exit'),
+            child: Text(gameIsOver ? 'Exit' : 'Discard & Exit'),
           ),
-          TextButton(
-            onPressed: () async {
-              await _saveGame(
-                fen: game.fen,
-                fenHistory: fenHistory,
-                difficulty: widget.difficulty,
-                playerColor: widget.playerColor,
-                isUntimed: widget.timeControl.isUntimed,
-                whiteClockSeconds: whiteClockSeconds,
-                blackClockSeconds: blackClockSeconds,
-              );
-              if (dialogContext.mounted) Navigator.of(dialogContext).pop();
-              if (mounted) Navigator.of(context).pop();
-            },
-            child: const Text('Save & Exit'),
-          ),
+          if (!gameIsOver)
+            TextButton(
+              onPressed: () async {
+                await _saveGame(
+                  fen: game.fen,
+                  fenHistory: fenHistory,
+                  difficulty: widget.difficulty,
+                  playerColor: widget.playerColor,
+                  isUntimed: widget.timeControl.isUntimed,
+                  whiteClockSeconds: whiteClockSeconds,
+                  blackClockSeconds: blackClockSeconds,
+                );
+                if (dialogContext.mounted) Navigator.of(dialogContext).pop();
+                if (mounted) Navigator.of(context).pop();
+              },
+              child: const Text('Save & Exit'),
+            ),
         ],
       ),
     );
@@ -1341,19 +1362,32 @@ class _ChessBoardScreenState extends State<ChessBoardScreen> {
   }
 
   void _showHint() {
-    if (aiThinking || timeExpired || game.turn != humanSide) return;
+    // hintLoading/_awaitingHint guard against double-tapping Hint before
+    // the first request resolves — sending a second Stockfish 'go' while
+    // one is already in flight silently supersedes the first (Stockfish
+    // only tracks one search at a time), and the stray bestmove that
+    // eventually arrives was landing in the wrong place, which is what
+    // caused a piece to move on its own and the board to freeze.
+    if (aiThinking || timeExpired || hintLoading || _awaitingHint) return;
+    if (game.turn != humanSide) return;
     final engine = stockfish;
     if (engine == null || engine.state.value != StockfishState.ready) return;
 
     setState(() => hintLoading = true);
     _awaitingHint = true;
+    _hintRequestedForFen = game.fen;
     engine.stdin = 'position fen ${game.fen}';
     engine.stdin = 'setoption name Skill Level value 20';
     engine.stdin = 'go movetime 500';
   }
 
   void _applyHintMove(String uciMove) {
-    if (uciMove == '(none)') {
+    // Safety net: if the board has moved on since this hint was requested
+    // (e.g. timing overlap with an engine move), applying it would show a
+    // hint for a position that no longer exists — discard it instead.
+    final stale = _hintRequestedForFen != null && _hintRequestedForFen != game.fen;
+    _hintRequestedForFen = null;
+    if (stale || uciMove == '(none)') {
       setState(() => hintLoading = false);
       return;
     }
@@ -1697,6 +1731,14 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     currentIndex = widget.fenHistory.length - 1;
     _scanIndex = currentIndex;
     _initEngine();
+    // Fallback in case Stockfish never reaches ready at all (rather than
+    // just being slow) — surfaces a clear message instead of spinning on
+    // "Evaluating..." forever with no feedback.
+    Future.delayed(const Duration(seconds: 8), () {
+      if (mounted && evalText == 'Evaluating...' && !_evalCache.containsKey(currentIndex)) {
+        setState(() => evalText = 'Engine unavailable — try reopening Analysis');
+      }
+    });
   }
 
   @override
