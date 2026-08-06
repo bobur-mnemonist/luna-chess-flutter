@@ -2358,14 +2358,17 @@ class _MemoryTrainScreenState extends State<MemoryTrainScreen> {
   bool _awaitingSetupMove = false;
   int _setupMovesRemaining = 0;
 
-  // Level 1 starts easy (few pieces on the board beyond the start
-  // position, long study time) and ramps up each time the user clears a
-  // round well — standard progressive-difficulty memory training. Level
-  // never resets on a weak round, only fails to advance, so a rough
-  // session doesn't feel punishing.
+  // Level 1 shows just a handful of pieces (easy to remember); each level
+  // up adds more, ramping toward a full board by the top level. This is
+  // controlled directly — a real position is generated via a short
+  // Stockfish self-play game, then randomly thinned down to the target
+  // piece count for the current level, so difficulty tracks "how many
+  // pieces are on the board" rather than "how many moves were played"
+  // (a small move count can still leave 30 pieces on the board, which
+  // isn't actually easier to memorize).
   int level = 1;
   static const int maxLevel = 10;
-  int get _setupMovesForLevel => 2 + (level - 1) * 2; // 2,4,6,...,20
+  int get _targetPieceCountForLevel => 4 + (level - 1) * 3; // 4,7,...,31
   int get studySecondsForLevel =>
       (26 - (level - 1) * 2).clamp(8, 26); // 26,24,...,8
   int secondsLeft = 26;
@@ -2415,11 +2418,11 @@ class _MemoryTrainScreenState extends State<MemoryTrainScreen> {
       selectedPaletteSpec = null;
       correctCount = 0;
       secondsLeft = studySecondsForLevel;
-      // Move count and a small amount of randomness scale with the current
-      // level — early levels are just a handful of moves from the start
-      // position (easy to remember), later levels approach a full
-      // mid-game jumble.
-      _setupMovesRemaining = _setupMovesForLevel + _random.nextInt(3);
+      // A short, fixed amount of self-play gives a realistic (not
+      // random-looking) arrangement to draw pieces from — the actual
+      // difficulty control is the thinning step in _startStudyPhase, not
+      // this move count.
+      _setupMovesRemaining = 10 + _random.nextInt(11);
     });
     _playNextSetupMove();
   }
@@ -2474,16 +2477,31 @@ class _MemoryTrainScreenState extends State<MemoryTrainScreen> {
   }
 
   void _startStudyPhase() {
-    // Snapshot the answer key from the generated position before anything
-    // else touches `game`.
-    final key = <int, _PieceSpec>{};
+    // Snapshot every occupied square from the generated position, then
+    // randomly thin it down to the level's target piece count — this is
+    // what actually controls how much there is to remember. Kings are
+    // always kept (a position missing a king reads as broken), everything
+    // else is a random subset.
+    final allSquares = <int, _PieceSpec>{};
     for (int row = 0; row < 8; row++) {
       for (int col = 0; col < 8; col++) {
         final piece = game.get(_squareName(row, col));
         final spec = _specFor(piece);
-        if (spec != null) key[_squareIndex(row, col)] = spec;
+        if (spec != null) allSquares[_squareIndex(row, col)] = spec;
       }
     }
+    final kingSquares =
+        allSquares.entries.where((e) => e.value.type == 'k').map((e) => e.key).toList();
+    final otherSquares =
+        allSquares.entries.where((e) => e.value.type != 'k').map((e) => e.key).toList()
+          ..shuffle(_random);
+    final targetTotal = _targetPieceCountForLevel.clamp(2, allSquares.length);
+    final keepCount = (targetTotal - kingSquares.length).clamp(0, otherSquares.length);
+    final keptSquares = {...kingSquares, ...otherSquares.take(keepCount)};
+    final key = <int, _PieceSpec>{
+      for (final sq in keptSquares) sq: allSquares[sq]!,
+    };
+
     setState(() {
       answerKey = key;
       phase = _MemoryPhase.studying;
