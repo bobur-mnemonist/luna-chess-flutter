@@ -1,0 +1,266 @@
+name: Build APK & AAB
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: 'stable'
+
+      - name: Scaffold the platform-specific project files
+        run: |
+          # Our repo only contains pubspec.yaml + lib/ (the Dart source).
+          # `flutter create` generates the android/, ios/, etc. folders
+          # that Gradle needs to actually build an APK. We generate a
+          # fresh scaffold in a temp directory, then drop our own
+          # pubspec.yaml and lib/ into it before building.
+          flutter create --org org.bobur --project-name luna_chess /tmp/scaffold
+          cp -f pubspec.yaml /tmp/scaffold/pubspec.yaml
+          rm -rf /tmp/scaffold/lib
+          cp -r lib /tmp/scaffold/lib
+          if [ -d assets ]; then cp -r assets /tmp/scaffold/assets; fi
+          # Diagnostic: confirm the assets/audio files actually landed in
+          # the scaffold before Gradle ever runs, so a silent-audio report
+          # can be traced to "not copied" vs "copied but stripped/unloaded
+          # at runtime" instead of guessing.
+          echo "---- assets copied into scaffold ----"
+          find /tmp/scaffold/assets -type f 2>/dev/null || echo "NO assets dir in scaffold!"
+          # Work around an AGP/aapt2 vs Android SDK 35 incompatibility:
+          # the scaffold's bundled aapt2 can't parse SDK 35's android.jar
+          # resource table ("RES_TABLE_TYPE_TYPE entry offsets overlap"),
+          # which only surfaces in --release builds (lint/resource
+          # verification runs there but not in --debug). Forcing a newer
+          # aapt2 via Maven fixes it without bumping the whole AGP/Gradle
+          # toolchain.
+          echo "android.aapt2Version=8.6.1-11315950" >> /tmp/scaffold/android/gradle.properties
+          # Bump the Kotlin Gradle plugin version: newer plugins
+          # (shared_preferences_android, stockfish_flutter_plus) are
+          # compiled with Kotlin 1.9+, but the scaffold defaults to 1.7.1,
+          # causing "compiled with an incompatible version of Kotlin"
+          # errors. Handle both possible locations (Flutter 3.19+ uses
+          # settings.gradle's plugins block; older scaffolds use
+          # build.gradle's ext.kotlin_version).
+          if [ -f /tmp/scaffold/android/settings.gradle ]; then
+            sed -i -E "s/(id \"org\.jetbrains\.kotlin\.android\" version )\"[0-9.]+\"/\1\"1.9.22\"/" /tmp/scaffold/android/settings.gradle
+            grep -n "kotlin.android" /tmp/scaffold/android/settings.gradle
+          fi
+          if [ -f /tmp/scaffold/android/build.gradle ]; then
+            sed -i -E "s/ext\.kotlin_version = ['\"][0-9.]+['\"]/ext.kotlin_version = '1.9.22'/" /tmp/scaffold/android/build.gradle
+            grep -n "kotlin_version" /tmp/scaffold/android/build.gradle || true
+          fi
+
+          # Enable R8 code shrinking + resource shrinking for release
+          # builds, to cut APK size further. Inserted into the release{}
+          # block via Python (not sed) since a fresh scaffold's release
+          # block may not already contain minifyEnabled/shrinkResources
+          # lines to flip — inserting is more robust than assuming they
+          # exist verbatim.
+          python3 - << 'PYEOF'
+          import re
+          path = "/tmp/scaffold/android/app/build.gradle"
+          with open(path) as f:
+              content = f.read()
+
+          def add_flags(match):
+              block = match.group(0)
+              if "minifyEnabled" not in block:
+                  block = block.replace(
+                      "release {",
+                      "release {\n            minifyEnabled true",
+                      1,
+                  )
+              return block
+
+          # Only touch the release {...} block inside buildTypes, leave debug alone.
+          content = re.sub(r"release\s*\{[^}]*\}", add_flags, content, count=1, flags=re.S)
+
+          with open(path, "w") as f:
+              f.write(content)
+          PYEOF
+          grep -n "minifyEnabled\|shrinkResources" /tmp/scaffold/android/app/build.gradle || true
+
+          # Add proguard rules so R8 doesn't strip anything the FFI-based
+          # Stockfish binding or platform-channel plugins (TTS, audio,
+          # shared_preferences) reach via reflection/JNI rather than
+          # normal Dart-visible calls, which R8's static analysis can't
+          # see and would otherwise treat as unused and strip — breaking
+          # those features at runtime even though the build succeeds.
+          cat > /tmp/scaffold/android/app/proguard-rules.pro << 'PROEOF'
+          # Keep everything Flutter's embedding needs
+          -keep class io.flutter.app.** { *; }
+          -keep class io.flutter.plugin.**  { *; }
+          -keep class io.flutter.util.**  { *; }
+          -keep class io.flutter.view.**  { *; }
+          -keep class io.flutter.**  { *; }
+          -keep class io.flutter.plugins.**  { *; }
+
+          # Keep JNI/native-facing classes used by FFI plugins (stockfish_flutter_plus)
+          -keepclasseswithmembers class * {
+              native <methods>;
+          }
+
+          # Keep TTS, audio, and shared_preferences plugin classes (platform
+          # channel reflection targets)
+          -keep class com.tundralabs.fluttertts.** { *; }
+          -keep class xyz.luan.audioplayers.** { *; }
+          -keep class io.flutter.plugins.sharedpreferences.** { *; }
+          PROEOF
+
+          # Point the release build's proguardFiles at this file (if not already).
+          python3 - << 'PYEOF'
+          path = "/tmp/scaffold/android/app/build.gradle"
+          with open(path) as f:
+              content = f.read()
+          if "proguard-rules.pro" not in content:
+              content = content.replace(
+                  "minifyEnabled true",
+                  "minifyEnabled true\n            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'",
+                  1,
+              )
+              with open(path, "w") as f:
+                  f.write(content)
+          PYEOF
+
+      - name: Install dependencies
+        working-directory: /tmp/scaffold
+        run: flutter pub get
+
+      - name: Configure release signing
+        working-directory: /tmp/scaffold
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          # Decode the keystore created once by generate_keystore.yml
+          # (see that workflow's comments) back into a file, and point
+          # Gradle's release signingConfig at it via key.properties — the
+          # standard Flutter approach. If the secrets aren't set yet
+          # (e.g. this workflow ran before the one-time keystore step),
+          # fail with a clear message rather than silently producing an
+          # unsigned or debug-signed release build.
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::KEYSTORE_BASE64 secret is not set. Run the 'Generate Signing Keystore' workflow once first, then add the four secrets it prints instructions for (see that workflow's comments)."
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > android/app/upload-keystore.jks
+          cat > android/key.properties << EOF
+          storePassword=$KEYSTORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          storeFile=upload-keystore.jks
+          EOF
+          # Wire key.properties into app/build.gradle: load the
+          # properties file and set signingConfigs.release from it, then
+          # point the release buildType's signingConfig at it (replacing
+          # any debug-signing fallback the fresh scaffold has by default).
+          python3 - << 'PYEOF'
+          path = "android/app/build.gradle"
+          with open(path) as f:
+              content = f.read()
+
+          load_snippet = '''
+          def keystorePropertiesFile = rootProject.file("key.properties")
+          def keystoreProperties = new Properties()
+          if (keystorePropertiesFile.exists()) {
+              keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+          }
+
+          '''
+          if "keystorePropertiesFile" not in content:
+              # Insert right before the `android {` block opens.
+              content = content.replace("android {", load_snippet + "android {", 1)
+
+          if "signingConfigs {" not in content:
+              content = content.replace(
+                  "buildTypes {",
+                  '''signingConfigs {
+                  release {
+                      keyAlias keystoreProperties['keyAlias']
+                      keyPassword keystoreProperties['keyPassword']
+                      storeFile keystoreProperties['storeFile'] ? file(keystoreProperties['storeFile']) : null
+                      storePassword keystoreProperties['storePassword']
+                  }
+              }
+              buildTypes {''',
+                  1,
+              )
+
+          with open(path, "w") as f:
+              f.write(content)
+          PYEOF
+          # Point the release buildType's signingConfig at the one just
+          # added, replacing the scaffold's debug-signing fallback. The
+          # earlier version of this script matched the first "release
+          # {...}" block in the file, which after the previous step is
+          # the one INSIDE signingConfigs (not buildTypes) — Gradle
+          # doesn't have a signingConfig() method there, causing
+          # "Could not find method signingConfig()". Fixed by targeting
+          # the debug-signing fallback line directly instead of a brace
+          # block: `signingConfig = signingConfigs.debug` (or the
+          # no-`=` variant, `signingConfig signingConfigs.debug`) only
+          # ever appears inside buildTypes.release in a fresh Flutter
+          # scaffold, so a straight string/regex substitution on that
+          # exact line can't land in the wrong block.
+          python3 - << 'PYEOF'
+          import re
+          path = "android/app/build.gradle"
+          with open(path) as f:
+              content = f.read()
+
+          new_content, n = re.subn(
+              r"signingConfig\s*=?\s*signingConfigs\.debug",
+              "signingConfig signingConfigs.release",
+              content,
+          )
+          if n == 0:
+              raise SystemExit(
+                  "Could not find 'signingConfig ... signingConfigs.debug' to "
+                  "replace in build.gradle — scaffold format may have changed."
+              )
+          with open(path, "w") as f:
+              f.write(new_content)
+          PYEOF
+          grep -n "signingConfig" android/app/build.gradle
+
+      - name: Build release APK (for sideload/manual testing)
+        working-directory: /tmp/scaffold
+        # --split-per-abi + --target-platform limits output to arm64-v8a
+        # only (the architecture virtually all Android phones from the
+        # last ~6 years use) instead of also building armeabi-v7a/x86_64
+        # — cuts size roughly 3x since each architecture bundles its own
+        # copy of Stockfish's native library. This APK is for sideloading
+        # to a device directly; Play Store itself wants the AAB below.
+        run: flutter build apk --release --target-platform android-arm64 --split-per-abi
+
+      - name: Build release AAB (for Play Store upload)
+        working-directory: /tmp/scaffold
+        # App Bundle format, required for new Play Store submissions.
+        # Not restricted to a single ABI — Play's own dynamic delivery
+        # splits it per-device at install time, so all architectures are
+        # included here (unlike the sideload APK above).
+        run: flutter build appbundle --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: luna-chess-flutter-apk
+          path: /tmp/scaffold/build/app/outputs/flutter-apk/*.apk
+
+      - name: Upload AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: luna-chess-flutter-aab
+          path: /tmp/scaffold/build/app/outputs/bundle/release/*.aab
+
