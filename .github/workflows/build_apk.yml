@@ -70,7 +70,7 @@ jobs:
               if "minifyEnabled" not in block:
                   block = block.replace(
                       "release {",
-                      "release {\n            minifyEnabled true\n            shrinkResources true",
+                      "release {\n            minifyEnabled true",
                       1,
                   )
               return block
